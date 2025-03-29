@@ -1,14 +1,15 @@
-
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Layout from '@/components/Layout';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { MessageSquare, Send, Loader2 } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { MessageSquare, Send, Loader2, LogOut, User, Users, Settings } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/components/ui/use-toast';
-import ProfileHeader from '@/components/profile/ProfileHeader';
-import ChatHistory from '@/components/profile/ChatHistory';
-import CounselorQueries from '@/components/profile/CounselorQueries';
+import { format } from 'date-fns';
+import { Switch } from '@/components/ui/switch';
+import RecentConversations from '@/components/profile/RecentConversations';
+import { ChatPreview } from '@/types/chat';
 
 const Profile = () => {
   const navigate = useNavigate();
@@ -16,6 +17,9 @@ const Profile = () => {
   const [loading, setLoading] = useState(true);
   const [chats, setChats] = useState<any[]>([]);
   const [queries, setQueries] = useState<any[]>([]);
+  const [isAnonymous, setIsAnonymous] = useState(true);
+  const [recentConversations, setRecentConversations] = useState<ChatPreview[]>([]);
+  const [loadingConversations, setLoadingConversations] = useState(true);
   
   useEffect(() => {
     const fetchUserData = async () => {
@@ -80,6 +84,52 @@ const Profile = () => {
         if (chatsError) throw chatsError;
         setChats(chatsData || []);
         
+        // Fetch recent counselor conversations
+        const { data: counselorChatsData, error: counselorChatsError } = await supabase
+          .from('chats')
+          .select(`
+            id,
+            counselor_id,
+            last_message_at,
+            counselors (
+              full_name,
+              profile_image_url
+            ),
+            chat_messages (
+              content,
+              created_at,
+              sender_type
+            )
+          `)
+          .eq('user_id', session.user.id)
+          .not('counselor_id', 'is', null)
+          .order('last_message_at', { ascending: false })
+          .limit(5);
+          
+        if (counselorChatsError) throw counselorChatsError;
+        
+        if (counselorChatsData) {
+          const recentChats = counselorChatsData.map(chat => {
+            const lastMessage = chat.chat_messages && chat.chat_messages.length > 0 
+              ? chat.chat_messages.sort((a: any, b: any) => 
+                  new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+                )[0].content
+              : 'No messages yet';
+              
+            return {
+              id: chat.id,
+              counselorId: chat.counselor_id,
+              counselorName: chat.counselors?.full_name || 'Counselor',
+              lastMessage,
+              lastMessageTime: new Date(chat.last_message_at || chat.created_at),
+              counselorImage: chat.counselors?.profile_image_url
+            } as ChatPreview;
+          });
+          
+          setRecentConversations(recentChats);
+        }
+        setLoadingConversations(false);
+        
         // Fetch queries
         const { data: queriesData, error: queriesError } = await supabase
           .from('queries')
@@ -121,6 +171,32 @@ const Profile = () => {
     fetchUserData();
   }, [navigate]);
   
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+      navigate('/login');
+      toast({
+        title: "Success",
+        description: "Successfully signed out"
+      });
+    } catch (error: any) {
+      console.error('Error signing out:', error.message);
+      toast({
+        title: "Error",
+        description: "Failed to sign out",
+        variant: "destructive"
+      });
+    }
+  };
+  
+  const toggleAnonymity = async () => {
+    setIsAnonymous(!isAnonymous);
+    toast({
+      title: "Anonymity Updated",
+      description: `Your future interactions will be ${!isAnonymous ? 'anonymous' : 'identified'}`
+    });
+  };
+  
   if (loading) {
     return (
       <Layout>
@@ -137,32 +213,185 @@ const Profile = () => {
   return (
     <Layout>
       <div className="container mx-auto px-4 py-8">
-        <div className="flex flex-col md:flex-row justify-between items-start gap-8">
-          {/* Profile Section */}
-          <ProfileHeader profile={profile} />
-          
-          {/* History Tabs */}
-          <div className="w-full md:w-2/3">
-            <Tabs defaultValue="chats">
-              <TabsList className="w-full mb-6">
-                <TabsTrigger value="chats" className="flex-1">
+        <div className="grid grid-cols-1 gap-8">
+          <Card className="bg-[#2A3536] border-0 shadow-lg">
+            <CardHeader className="pb-4">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                  <CardTitle className="text-2xl">Your Profile</CardTitle>
+                  <CardDescription className="text-muted-foreground">
+                    {profile?.email}
+                  </CardDescription>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center space-x-2">
+                    <Switch 
+                      id="anonymous-mode" 
+                      checked={isAnonymous}
+                      onCheckedChange={toggleAnonymity}
+                    />
+                    <span className="text-sm text-muted-foreground">Anonymous Mode</span>
+                  </div>
+                  <Button variant="outline" onClick={handleSignOut}>
+                    <LogOut className="h-4 w-4 mr-2" />
+                    Sign Out
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Button 
+                  className="bg-[#00A3E0] hover:bg-[#33B5E5]" 
+                  onClick={() => navigate('/chat')}
+                >
                   <MessageSquare className="h-4 w-4 mr-2" />
-                  Chat History
-                </TabsTrigger>
-                <TabsTrigger value="queries" className="flex-1">
+                  Chat with AI
+                </Button>
+                <Button 
+                  className="bg-[#00A3E0] hover:bg-[#33B5E5]" 
+                  onClick={() => navigate('/counselors')}
+                >
+                  <Users className="h-4 w-4 mr-2" />
+                  View Counselors
+                </Button>
+                <Button 
+                  className="bg-[#00A3E0] hover:bg-[#33B5E5]" 
+                  onClick={() => navigate('/counselors')}
+                >
                   <Send className="h-4 w-4 mr-2" />
-                  Counselor Queries
-                </TabsTrigger>
-              </TabsList>
-              
-              <TabsContent value="chats">
-                <ChatHistory chats={chats} />
-              </TabsContent>
-              
-              <TabsContent value="queries">
-                <CounselorQueries queries={queries} />
-              </TabsContent>
-            </Tabs>
+                  Submit a Query
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <RecentConversations 
+            conversations={recentConversations} 
+            isLoading={loadingConversations} 
+          />
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <Card className="bg-[#2A3536] border-0 shadow-lg">
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <MessageSquare className="h-5 w-5 mr-2" />
+                  Your Chatbot History
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="max-h-[400px] overflow-y-auto">
+                {chats.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-center">
+                    <MessageSquare className="h-12 w-12 text-muted-foreground mb-2 opacity-20" />
+                    <p className="text-muted-foreground">No chatbot interactions yet. Start a chat now!</p>
+                    <Button 
+                      className="mt-4 bg-[#00A3E0] hover:bg-[#33B5E5]" 
+                      onClick={() => navigate('/chat')}
+                    >
+                      Start a Chat
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {chats.map((chat) => (
+                      <div key={chat.id} className="bg-[#1A2526] p-4 rounded-lg">
+                        <div className="flex justify-between items-start mb-2">
+                          <div>
+                            <p className="font-medium">Chat Session</p>
+                            <p className="text-xs text-muted-foreground">
+                              {format(new Date(chat.created_at), 'PPp')}
+                            </p>
+                          </div>
+                          <div className="px-2 py-1 rounded text-xs bg-primary/20 text-primary">
+                            {chat.is_anonymous ? 'Anonymous' : 'Identified'}
+                          </div>
+                        </div>
+                        {chat.chat_messages && chat.chat_messages.length > 0 && (
+                          <div className="border-l-2 border-primary/30 pl-3 py-1 mb-3 line-clamp-2">
+                            <p className="text-sm text-muted-foreground">
+                              {chat.chat_messages[0].content}
+                            </p>
+                          </div>
+                        )}
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          className="w-full mt-2"
+                          onClick={() => navigate('/chat')}
+                        >
+                          View Chat
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            
+            <Card className="bg-[#2A3536] border-0 shadow-lg">
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <Send className="h-5 w-5 mr-2" />
+                  Your Queries
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="max-h-[400px] overflow-y-auto">
+                {queries.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-center">
+                    <Send className="h-12 w-12 text-muted-foreground mb-2 opacity-20" />
+                    <p className="text-muted-foreground">No queries submitted yet. Reach out to a counselor!</p>
+                    <Button 
+                      className="mt-4 bg-[#00A3E0] hover:bg-[#33B5E5]" 
+                      onClick={() => navigate('/counselors')}
+                    >
+                      Find a Counselor
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {queries.map((query) => (
+                      <div key={query.id} className="bg-[#1A2526] p-4 rounded-lg">
+                        <div className="flex justify-between items-start mb-2">
+                          <div>
+                            <p className="font-medium">{query.subject}</p>
+                            <p className="text-xs text-muted-foreground">
+                              To: {query.counselors?.full_name || 'Counselor'} • {format(new Date(query.created_at), 'PPp')}
+                            </p>
+                          </div>
+                          <div className={`px-2 py-1 rounded text-xs ${
+                            query.status === 'resolved' 
+                              ? 'bg-green-500/20 text-green-400' 
+                              : query.status === 'in_progress' 
+                                ? 'bg-blue-500/20 text-blue-400' 
+                                : 'bg-yellow-500/20 text-yellow-400'
+                          }`}>
+                            {query.status}
+                          </div>
+                        </div>
+                        <div className="border-l-2 border-primary/30 pl-3 py-1 mb-3 line-clamp-2">
+                          <p className="text-sm text-muted-foreground">
+                            {query.content}
+                          </p>
+                        </div>
+                        {query.query_responses && query.query_responses.length > 0 ? (
+                          <Button 
+                            variant="outline" 
+                            size="sm"
+                            className="w-full mt-2"
+                          >
+                            View Reply
+                          </Button>
+                        ) : (
+                          <p className="text-xs text-center text-muted-foreground mt-2">
+                            Awaiting counselor response
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </div>
         </div>
       </div>

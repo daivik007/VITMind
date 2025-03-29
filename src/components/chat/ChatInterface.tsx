@@ -1,9 +1,12 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, User, Bot, ChevronRight, ChevronDown } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import BlurCard from '@/components/ui/BlurCard';
 import CircularButton from '@/components/ui/CircularButton';
+import { useNavigate } from 'react-router-dom';
+import { Button } from '@/components/ui/button';
 
 type Message = {
   id: string;
@@ -18,6 +21,7 @@ type ChatOption = {
   aiResponse?: string;
 };
 
+// Constants
 const INITIAL_MESSAGES: Message[] = [
   {
     id: '1',
@@ -45,22 +49,137 @@ const CHAT_OPTIONS: ChatOption[] = [
   },
 ];
 
-const ChatInterface = () => {
+// Guest chat storage keys
+const GUEST_MESSAGES_KEY = 'guest_chat_messages';
+const MAX_GUEST_MESSAGES = 5;
+
+const ChatInterface = ({ user }: { user?: any }) => {
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showOptions, setShowOptions] = useState(true);
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [guestMessageCount, setGuestMessageCount] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+
+  // Load guest messages from localStorage if not logged in
+  useEffect(() => {
+    if (!user) {
+      const storedMessages = localStorage.getItem(GUEST_MESSAGES_KEY);
+      if (storedMessages) {
+        const parsedMessages = JSON.parse(storedMessages);
+        setMessages(parsedMessages.map((msg: any) => ({
+          ...msg,
+          timestamp: new Date(msg.timestamp)
+        })));
+        setGuestMessageCount(parsedMessages.filter((msg: any) => msg.sender === 'user').length);
+        
+        if (parsedMessages.length > 1) {
+          setShowOptions(false);
+        }
+      }
+    }
+  }, [user]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Create or retrieve chat session for logged-in users
+  useEffect(() => {
+    const initializeChat = async () => {
+      if (!user) return;
+      
+      try {
+        // Check for existing active chat
+        const { data: existingChats, error: fetchError } = await supabase
+          .from('chats')
+          .select('id')
+          .eq('user_id', user.id)
+          .is('counselor_id', null)
+          .order('created_at', { ascending: false })
+          .limit(1);
+          
+        if (fetchError) throw fetchError;
+        
+        if (existingChats && existingChats.length > 0) {
+          // Use existing chat
+          setChatId(existingChats[0].id);
+          
+          // Load messages from this chat
+          const { data: messagesData, error: messagesError } = await supabase
+            .from('chat_messages')
+            .select('*')
+            .eq('chat_id', existingChats[0].id)
+            .order('created_at', { ascending: true });
+            
+          if (messagesError) throw messagesError;
+          
+          if (messagesData && messagesData.length > 0) {
+            const formattedMessages = messagesData.map(msg => ({
+              id: msg.id,
+              text: msg.content,
+              sender: msg.sender_type as 'user' | 'ai' | 'counselor',
+              timestamp: new Date(msg.created_at),
+            }));
+            
+            setMessages(formattedMessages);
+            setShowOptions(false);
+          }
+        } else {
+          // Create new chat
+          const { data: newChat, error: createError } = await supabase
+            .from('chats')
+            .insert({
+              user_id: user.id,
+              is_anonymous: true,
+            })
+            .select();
+            
+          if (createError) throw createError;
+          
+          if (newChat) {
+            setChatId(newChat[0].id);
+            
+            // Save initial AI message
+            const { error: messageError } = await supabase
+              .from('chat_messages')
+              .insert({
+                chat_id: newChat[0].id,
+                content: INITIAL_MESSAGES[0].text,
+                sender_type: 'ai',
+              });
+              
+            if (messageError) throw messageError;
+          }
+        }
+      } catch (error) {
+        console.error('Error initializing chat:', error);
+      }
+    };
+    
+    if (user) {
+      initializeChat();
+    }
+  }, [user]);
+
   const callGeminiAPI = async (userMessage: string) => {
     try {
+      // Format messages in the expected structure
+      const formattedMessages = messages.concat({
+        id: Date.now().toString(),
+        text: userMessage,
+        sender: 'user',
+        timestamp: new Date(),
+      }).map(msg => ({
+        role: msg.sender === 'user' ? 'user' : 'model',
+        content: msg.text
+      }));
+
       const { data, error } = await supabase.functions.invoke('gemini-chat', {
-        body: { message: userMessage },
+        body: { messages: formattedMessages },
       });
 
       if (error) {
@@ -78,6 +197,17 @@ const ChatInterface = () => {
   const handleSendMessage = async (text: string = inputValue) => {
     if (!text.trim()) return;
 
+    // For guest users, check if they've reached the message limit
+    if (!user && guestMessageCount >= MAX_GUEST_MESSAGES) {
+      toast({
+        title: 'Message Limit Reached',
+        description: 'Please sign in to continue using the chat feature.',
+        variant: 'default',
+      });
+      navigate('/login', { state: { returnTo: '/chat', message: 'Please log in to continue your conversation.' } });
+      return;
+    }
+
     // Add user message
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -86,12 +216,30 @@ const ChatInterface = () => {
       timestamp: new Date(),
     };
     
-    setMessages(prev => [...prev, userMessage]);
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
     setInputValue('');
     setIsTyping(true);
     setShowOptions(false);
+
+    // Update guest message count and save to localStorage if not logged in
+    if (!user) {
+      setGuestMessageCount(prev => prev + 1);
+      localStorage.setItem(GUEST_MESSAGES_KEY, JSON.stringify(updatedMessages));
+    }
     
     try {
+      // Save user message to database if authenticated
+      if (user && chatId) {
+        await supabase
+          .from('chat_messages')
+          .insert({
+            chat_id: chatId,
+            content: userMessage.text,
+            sender_type: 'user',
+          });
+      }
+      
       // Get response from Gemini API
       const aiResponseText = await callGeminiAPI(text);
       
@@ -102,7 +250,24 @@ const ChatInterface = () => {
         timestamp: new Date(),
       };
       
-      setMessages(prev => [...prev, aiMessage]);
+      const finalMessages = [...updatedMessages, aiMessage];
+      setMessages(finalMessages);
+      
+      // Save to localStorage for guest users
+      if (!user) {
+        localStorage.setItem(GUEST_MESSAGES_KEY, JSON.stringify(finalMessages));
+      }
+      
+      // Save AI response to database if authenticated
+      if (user && chatId) {
+        await supabase
+          .from('chat_messages')
+          .insert({
+            chat_id: chatId,
+            content: aiResponseText,
+            sender_type: 'ai',
+          });
+      }
     } catch (error) {
       console.error('Error getting AI response:', error);
       toast({
@@ -124,12 +289,30 @@ const ChatInterface = () => {
       timestamp: new Date(),
     };
     
-    setMessages(prev => [...prev, userMessage]);
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
     setInputValue('');
     setIsTyping(true);
     setShowOptions(false);
     
+    // Update guest message count and save to localStorage if not logged in
+    if (!user) {
+      setGuestMessageCount(prev => prev + 1);
+      localStorage.setItem(GUEST_MESSAGES_KEY, JSON.stringify(updatedMessages));
+    }
+    
     try {
+      // Save user message to database if authenticated
+      if (user && chatId) {
+        await supabase
+          .from('chat_messages')
+          .insert({
+            chat_id: chatId,
+            content: userMessage.text,
+            sender_type: 'user',
+          });
+      }
+      
       // If there's a predefined AI response for this option, use it
       // Otherwise call the Gemini API
       let aiResponseText = option.aiResponse;
@@ -145,7 +328,24 @@ const ChatInterface = () => {
         timestamp: new Date(),
       };
       
-      setMessages(prev => [...prev, aiMessage]);
+      const finalMessages = [...updatedMessages, aiMessage];
+      setMessages(finalMessages);
+      
+      // Save to localStorage for guest users
+      if (!user) {
+        localStorage.setItem(GUEST_MESSAGES_KEY, JSON.stringify(finalMessages));
+      }
+      
+      // Save AI response to database if authenticated
+      if (user && chatId) {
+        await supabase
+          .from('chat_messages')
+          .insert({
+            chat_id: chatId,
+            content: aiMessage.text,
+            sender_type: 'ai',
+          });
+      }
     } catch (error) {
       console.error('Error processing option:', error);
       toast({
@@ -179,6 +379,18 @@ const ChatInterface = () => {
       
       setMessages(prev => [...prev, counselorMessage]);
     }, 3000);
+  };
+
+  const getMessageLimitInfo = () => {
+    if (!user) {
+      const remaining = MAX_GUEST_MESSAGES - guestMessageCount;
+      return (
+        <div className="mb-2 text-xs text-amber-400 font-medium">
+          Guest mode: {remaining} {remaining === 1 ? 'message' : 'messages'} remaining. <Button variant="link" className="p-0 h-auto text-xs text-primary" onClick={() => navigate('/login')}>Sign in</Button> to continue.
+        </div>
+      );
+    }
+    return null;
   };
 
   return (
@@ -269,6 +481,7 @@ const ChatInterface = () => {
         </div>
         
         <div className="pt-4 border-t border-border/60">
+          {getMessageLimitInfo()}
           <form 
             onSubmit={(e) => {
               e.preventDefault();
@@ -282,11 +495,12 @@ const ChatInterface = () => {
               onChange={(e) => setInputValue(e.target.value)}
               placeholder="Type your message..."
               className="flex-1 input-field"
+              disabled={(!user && guestMessageCount >= MAX_GUEST_MESSAGES) || isTyping}
             />
             <CircularButton 
               type="submit" 
               variant="primary"
-              disabled={!inputValue.trim()}
+              disabled={!inputValue.trim() || isTyping || (!user && guestMessageCount >= MAX_GUEST_MESSAGES)}
             >
               <Send className="h-5 w-5" />
             </CircularButton>
@@ -294,6 +508,13 @@ const ChatInterface = () => {
           <p className="text-xs text-muted-foreground mt-2">
             Your conversations are anonymous and confidential
           </p>
+          {!user && (
+            <p className="text-xs text-primary mt-1">
+              <Button variant="link" className="p-0 h-auto text-xs" onClick={() => navigate('/login')}>
+                Sign in
+              </Button> for unlimited chats and to save your conversation history.
+            </p>
+          )}
         </div>
       </BlurCard>
     </div>
