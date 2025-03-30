@@ -2,6 +2,8 @@
 
 VITMind is a web application built using modern frontend technologies to provide an intuitive and visually appealing user interface. The project leverages React with TypeScript, Vite for fast development, and Tailwind CSS for styling.
 
+> **Note:** To check the sign-in feature, use an incognito browser.
+
 ## Features
 
 - **Fast & Lightweight**: Uses Vite for efficient bundling and hot module replacement.
