@@ -32,8 +32,8 @@ VITMind is a web application built using modern frontend technologies to provide
 
 1. Clone the repository:
    ```sh
-   git clone https://github.com/your-username/vitmind-connect.git
-   cd vitmind-connect
+   git clone https://github.com/daivik007/VITMind.git
+   cd VITMind
    ```
 2. Install dependencies:
    ```sh
