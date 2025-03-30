@@ -4,6 +4,12 @@ VITMind is a web application built using modern frontend technologies to provide
 
 > **Note:** To check the sign-in feature, use an incognito browser.
 
+### Demo Credentials
+
+- **Email:** `sri@vit.ac.in`
+
+- **Password:** `12345678`
+
 ## Features
 
 - **Fast & Lightweight**: Uses Vite for efficient bundling and hot module replacement.
